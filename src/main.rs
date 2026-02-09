@@ -84,12 +84,19 @@ fn main() -> eframe::Result {
                 egui_dock::Split::Left,
                 0.15,
                 egui_dock::Node::leaf(TabKind::Sections(SectionListView::new(Vec::new()))),
-            );
+            ); tree.split( (SurfaceIndex(0), NodeIndex(0)), egui_dock::Split::Below, 0.5, egui_dock::Node::leaf(TabKind::Navigation(NavigationView::new())),);
 
             let mut signals = TabSignals::new();
 
             if let Ok(path) = std::env::var("OUROBOROS_AUTOOPEN") {
-                loaders::load(path, &mut memory, &mut signals).unwrap();
+                let sleigh_lang_id = loaders::load(path, &mut memory, &mut signals).unwrap();
+                let lang = sleigh_compile::SleighLanguageBuilder::new(
+                    "./SLEIGH/Processors/x86/data/languages/x86.ldefs",
+                    &sleigh_lang_id,
+                )
+                .build()
+                .unwrap();
+                memory.set_language(lang);
             }
 
             Ok(Box::new(DecompilerApp {
@@ -114,7 +121,15 @@ impl eframe::App for DecompilerApp {
                             .set_title("Open an executable file")
                             .pick_file()
                         {
-                            loaders::load(binary, &mut self.memory, &mut self.signals).unwrap();
+                            let sleigh_lang_id =
+                                loaders::load(binary, &mut self.memory, &mut self.signals).unwrap();
+                            let lang = sleigh_compile::SleighLanguageBuilder::new(
+                                "./SLEIGH/Processors/x86/data/languages/x86.ldefs",
+                                &sleigh_lang_id,
+                            )
+                            .build()
+                            .unwrap();
+                            self.memory.set_language(lang);
                         }
                     }
                 });
@@ -152,6 +167,7 @@ impl eframe::App for DecompilerApp {
             .show(ctx, &mut tab_viewer);
 
         let mut is_repopulate = false;
+        let mut discovered_functions = Vec::new();
         for signal in &self.signals {
             use SignalKind::*;
             match signal {
@@ -165,15 +181,14 @@ impl eframe::App for DecompilerApp {
                     self.memory
                         .symbols
                         .resolve_mut(var)
-                        .and_then(|v| Some(v.name = name.clone()))
+                        .map(|v| v.name = name.clone())
                         .or_else(|| {
                             self.current_function
                                 .and_then(|f| self.memory.ast.get_mut(&f))
-                                .and_then(|ast| {
+                                .map(|ast| {
                                     let section = ast.scope.find_owning_section(var).unwrap();
                                     ast.scope.get_symbol_mut(section, var).unwrap().name =
                                         name.clone();
-                                    Some(())
                                 })
                         });
                 }
@@ -190,30 +205,120 @@ impl eframe::App for DecompilerApp {
                     self.memory.ast.insert(*f, ast);
                     self.memory.functions.insert(*f, hf);
                     self.current_function = Some(*f);
+
+                    // Discover functions called from this function
+                    discover_functions_from_calls(*f, &self.memory, &mut discovered_functions);
                 }
                 MarkInstruction(addr) => {
                     is_repopulate = mark_instructions(*addr, &mut self.memory);
                 }
             }
         }
+
+        // Queue discovered functions for analysis
+        for func_addr in discovered_functions {
+            self.signals.define_function(func_addr.0);
+        }
+
+        // Also do a global scan of all IR blocks to find functions that might be
+        // called indirectly or from code we haven't analyzed yet
+        discover_all_functions_from_ir(&self.memory, &mut self.signals);
+
         if is_repopulate {
             self.signals.repopulate_instruction_rows();
         }
     }
 }
 
+fn discover_functions_from_calls(func_addr: Address, memory: &Memory, discovered: &mut Vec<Address>) {
+    use ir::basic_block::{DestinationKind, NextBlock};
+
+    // Get the high function we just analyzed
+    if let Some(hf) = memory.functions.get(&func_addr) {
+        // Scan all blocks in this function for call instructions
+        for block in hf.composed_blocks.iter_function(
+            hf.composed_blocks.slot_by_address(func_addr).unwrap()
+        ) {
+            let composed_block = &hf.composed_blocks[block];
+
+            if let NextBlock::Call { destination, .. } = &composed_block.next {
+                if let DestinationKind::Concrete(called_addr) = destination {
+                    // Check if this function has already been analyzed
+                    if !memory.functions.contains_key(called_addr) && !discovered.contains(called_addr) {
+                        println!("Auto-discovered function at {:#x} (called from {:#x})",
+                                 called_addr.0, func_addr.0);
+                        discovered.push(*called_addr);
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn discover_all_functions_from_ir(memory: &Memory, signals: &mut TabSignals) {
+    use ir::basic_block::{DestinationKind, NextBlock};
+    use ir::expression::ExpressionOp;
+
+    // Scan all IR blocks for concrete call destinations
+    for (_slot, block) in memory.ir.iter() {
+        if let NextBlock::Call { destination, .. } = &block.next {
+            if let DestinationKind::Concrete(called_addr) = destination {
+                // Check if this function has already been analyzed
+                if !memory.functions.contains_key(called_addr) {
+                    println!("Global scan: discovered function at {:#x}", called_addr.0);
+                    signals.define_function(called_addr.0);
+                }
+            }
+        }
+
+        // Also look for function pointers loaded into registers (e.g., main passed to __libc_start_main)
+        // Check common parameter-passing registers for concrete addresses
+        let param_regs = ["RDI", "RSI", "RDX", "RCX", "R8", "R9", "EDI", "ESI", "EDX", "ECX"];
+        for reg_name in &param_regs {
+            if let Some(var) = memory.lang.sleigh.get_reg(reg_name).and_then(|v| v.get_var()) {
+                if let Some(expr) = block.registers.get(var) {
+                    // Look for simple constant addresses (likely function pointers)
+                    if let Some(ExpressionOp::Value(addr_val)) = expr.root_op() {
+                        let addr = Address::from(*addr_val);
+                        // Check if this address looks like it's in the code section
+                        if memory.ir.get_by_address(addr).is_some() && !memory.functions.contains_key(&addr) {
+                            println!("Global scan: discovered potential function pointer in {} at {:#x}", reg_name, addr.0);
+                            signals.define_function(addr.0);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn mark_instructions(addr: Address, memory: &mut Memory) -> bool {
+    // dbg!((&addr, &memory.literal));
     let state = memory.literal.get_at_point_mut(addr).unwrap();
+    // dbg!(&state);
     let mut is_repopulate = false;
     match &mut state.kind {
         memory::LiteralKind::Data(items) => {
             let offset = (addr.0 - state.addr.0) as usize;
-            let instructions = LiteralState::from_machine_code(
+            // dbg!(offset);
+            let instructions = match LiteralState::from_machine_code(
                 std::borrow::Cow::Borrowed(&items[offset..]),
                 addr.0,
                 &memory.lang,
-            )
-            .unwrap();
+            ) {
+                Some(instrs) => instrs,
+                None => {
+                    eprintln!(
+                        "ERROR: Failed to decode instructions at address {:#x}. \
+                         This may indicate:\n\
+                         - Corrupted or invalid machine code\n\
+                         - Architecture mismatch (check SLEIGH language specification)\n\
+                         - Data misidentified as code",
+                        addr.0
+                    );
+                    return false;
+                }
+            };
 
             let consumed_size = instructions
                 .get_instructions()

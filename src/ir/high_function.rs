@@ -5,7 +5,7 @@ use std::collections::HashSet;
 
 use super::{
     abstract_syntax_tree::AbstractSyntaxTree,
-    basic_block::{BlockStorage, DestinationKind, NextBlock},
+    basic_block::{BlockIdentifier, BlockStorage, DestinationKind, NextBlock},
     control_flow_graph::ControlFlowGraph,
     program_tree_structure::ProgramTreeStructure,
     Expression, ExpressionOp, VariableSymbol,
@@ -241,8 +241,18 @@ impl HighFunction {
         {
             match &self.composed_blocks[block].identifier {
                 super::basic_block::BlockIdentifier::Physical(interval) => {
-                    map.insert_merge_touching_if_values_equal(*interval, self.start)
-                        .unwrap();
+                    if let Err(e) = map.insert_merge_touching_if_values_equal(*interval, self.start) {
+                        // This can happen when a function (e.g., main) is within the address range
+                        // of another function (e.g., _start) but is called indirectly.
+                        // Only panic if it's owned by a different function
+                        if e.value != self.start {
+                            println!(
+                                "Warning: Function at {:#x} overlaps with function at {:#x} in interval {:?}",
+                                self.start.0, e.value.0, interval
+                            );
+                            // Don't panic - the first function to claim an address keeps it
+                        }
+                    }
                 }
                 super::basic_block::BlockIdentifier::Virtual(address, _) => {
                     if let Err(e) = map.insert_merge_touching_if_values_equal(
@@ -250,7 +260,10 @@ impl HighFunction {
                         self.start,
                     ) {
                         if e.value != self.start {
-                            panic!("{e:?}")
+                            println!(
+                                "Warning: Function at {:#x} overlaps with function at {:#x} at address {:#x}",
+                                self.start.0, e.value.0, address.0
+                            );
                         }
                     }
                 }
@@ -264,7 +277,8 @@ impl HighFunction {
         //     mem.ir.get_at_point_mut(block.address).and_then(|b| Some(b.parent_function = self.cfg.start));
         // }
         let symbols = &mut mem.symbols;
-        symbols.add(self.start, 4, format!("FUN_{:X}", self.start.0));
+        // Only add FUN_ if no symbol exists (e.g., PLT symbols that are also treated as functions)
+        symbols.add_if_missing(self.start, 4, format!("FUN_{:X}", self.start.0));
         for e in &self.memory_read {
             if let Some(ExpressionOp::Value(v)) = e.root_op() {
                 symbols.add(*v, 4, format!("DAT_{:X}", v));
@@ -277,7 +291,8 @@ impl HighFunction {
         }
         for e in &self.function_calls {
             if let DestinationKind::Concrete(v) = e {
-                symbols.add(*v, 4, format!("FUN_{:X}", v.0));
+                // Only add FUN_ if no symbol exists (e.g., PLT symbols)
+                symbols.add_if_missing(*v, 4, format!("FUN_{:X}", v.0));
             }
         }
     }

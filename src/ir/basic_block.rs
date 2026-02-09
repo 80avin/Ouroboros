@@ -346,7 +346,7 @@ where
 }
 
 #[derive(Clone, PartialEq)]
-pub struct SpannedStorage<T>(pub SmallVec<[SpannedItem<T>; 8]>);
+pub struct SpannedStorage<T>(pub SmallVec<[SpannedItem<T>; 16]>);
 
 impl<T> Default for SpannedStorage<T> {
     fn default() -> Self {
@@ -386,10 +386,13 @@ impl<T> SpannedStorage<T> {
             self[var_node.offset + offset] = SpannedItem::ItemAt(var_node.offset);
         }
         let mut offset = var_node.offset + var_node.size;
+
         // trim later offsets since this insertion have overwritten a possible expression
-        while let SpannedItem::ItemAt(_) = self[offset] {
-            self[offset] = SpannedItem::Empty;
-            offset += 1;
+        if offset < self.0.len() as u8 {
+            while offset < self.0.len() as u8 && matches!(self[offset], SpannedItem::ItemAt(_)) {
+                self[offset] = SpannedItem::Empty;
+                offset += 1;
+            }
         }
     }
 }

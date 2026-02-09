@@ -31,6 +31,16 @@ impl SymbolTable {
         );
     }
 
+    /// Add a symbol only if one doesn't already exist at that address
+    pub fn add_if_missing<A: Into<Address>>(&mut self, address: A, size: u8, symbol: String) {
+        let address = address.into();
+        self.map.entry(address).or_insert(VariableDefinition {
+            kind: VariableType::default(),
+            name: symbol,
+            variable: VariableSymbol::Ram(Box::new(Expression::from(address)), size),
+        });
+    }
+
     pub fn resolve(&self, e: &VariableSymbol) -> Option<&VariableDefinition> {
         match e {
             VariableSymbol::Varnode(_) | VariableSymbol::CallResult { .. } => None,

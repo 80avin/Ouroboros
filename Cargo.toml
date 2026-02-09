@@ -23,6 +23,7 @@ pcode = { git = "https://github.com/icicle-emu/icicle-emu" }
 goblin = "0.10.2"
 rfd = "0.15.4"
 thiserror = "2.0.17"
+cpp_demangle = "0.4"
 # alacritty_terminal = "0.25.0"
 
 

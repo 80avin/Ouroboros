@@ -1,30 +1,101 @@
 use crate::memory::{navigation::Section, Memory};
-use crate::memory::{LiteralKind, LiteralState};
+use crate::memory::LiteralState;
 use crate::tab_viewer::TabSignals;
-use goblin::{error, Object};
-use std::borrow::Cow;
-use std::env;
-use std::fs;
-use std::path::Path;
+use goblin::Object;
 
 pub fn load<'s>(
     bytes: &'s [u8],
     memory: &mut Memory,
     signals: &mut TabSignals,
-) -> Result<(), super::LoaderError> {
+) -> Result<String, super::LoaderError> {
     let o = Object::parse(&bytes)?;
+    let sleigh_lang_id = match o {
+        Object::Elf(ref elf) => {
+            // Detect architecture from ELF header
+            use goblin::elf::header::*;
+            match elf.header.e_machine {
+                EM_386 => "x86:LE:32:default",
+                EM_X86_64 => "x86:LE:64:default",
+                _ => {
+                    return Err(super::LoaderError::MalformedFile(format!(
+                        "Unsupported architecture: e_machine = {}. Only x86 (EM_386) and x86-64 (EM_X86_64) are currently supported.",
+                        elf.header.e_machine
+                    )));
+                }
+            }
+        }
+        Object::PE(ref pe) => {
+            // Detect architecture from PE header
+            use goblin::pe::header::COFF_MACHINE_X86;
+            use goblin::pe::header::COFF_MACHINE_X86_64;
+            match pe.header.coff_header.machine {
+                COFF_MACHINE_X86 => "x86:LE:32:default",
+                COFF_MACHINE_X86_64 => "x86:LE:64:default",
+                _ => {
+                    return Err(super::LoaderError::MalformedFile(format!(
+                        "Unsupported architecture: machine = {:#x}. Only x86 (I386) and x86-64 (AMD64) are currently supported.",
+                        pe.header.coff_header.machine
+                    )));
+                }
+            }
+        }
+        _ => {
+            return Err(super::LoaderError::MalformedFile(
+                "Unsupported binary format. Only ELF and PE formats are currently supported.".into()
+            ));
+        }
+    };
+
     match o {
         Object::Elf(elf) => {
-            for entry in elf.dynsyms.iter() {
-                let name = elf.dynstrtab.get_at(entry.st_name);
-                let sh = elf.dynstrtab.get_at(entry.st_shndx);
-                println!(
-                    "{} ({}): {:?}",
-                    name.unwrap_or("No name"),
-                    sh.unwrap_or("NOSH"),
-                    entry
-                );
+            // Load PLT symbols by parsing .rela.plt relocations
+            // Find the .plt.sec section first (modern binaries), fallback to .plt
+            let plt_section = elf.section_headers.iter()
+                .find(|sh| {
+                    if let Some(name) = elf.shdr_strtab.get_at(sh.sh_name) {
+                        name == ".plt.sec"
+                    } else {
+                        false
+                    }
+                })
+                .or_else(|| {
+                    elf.section_headers.iter()
+                        .find(|sh| {
+                            if let Some(name) = elf.shdr_strtab.get_at(sh.sh_name) {
+                                name == ".plt"
+                            } else {
+                                false
+                            }
+                        })
+                });
+
+            if let Some(plt_sec) = plt_section {
+                let plt_base = plt_sec.sh_addr;
+
+                // Each PLT entry is typically 16 bytes in modern x86-64
+                const PLT_ENTRY_SIZE: u64 = 16;
+
+                // Iterate over PLT relocations
+                for (index, reloc) in elf.pltrelocs.iter().enumerate() {
+                    // Calculate PLT stub address: base + (index * entry_size)
+                    let plt_addr = plt_base + (index as u64 * PLT_ENTRY_SIZE);
+
+                    // Get the symbol for this PLT entry
+                    if let Some(sym) = elf.dynsyms.get(reloc.r_sym) {
+                        if let Some(name) = elf.dynstrtab.get_at(sym.st_name) {
+                            // Add to symbol table with demangled name
+                            let demangled = cpp_demangle::Symbol::new(name)
+                                .ok()
+                                .and_then(|s| s.demangle(&Default::default()).ok())
+                                .unwrap_or_else(|| name.to_string());
+
+                            println!("PLT symbol at {:#x}: {} ({})", plt_addr, demangled, name);
+                            memory.symbols.add(plt_addr, 8, demangled);
+                        }
+                    }
+                }
             }
+
             for section in &elf.section_headers {
                 use goblin::elf::section_header::*;
                 // ignore those sections
@@ -122,12 +193,7 @@ pub fn load<'s>(
             println!("Entry point: 0x{:x}", pe.entry as u64 + pe.image_base);
             signals.define_function(pe.entry as u64 + pe.image_base);
         }
-        Object::TE(te) => todo!(),
-        Object::COFF(coff) => todo!(),
-        Object::Mach(mach) => todo!(),
-        Object::Archive(archive) => todo!(),
-        Object::Unknown(_) => todo!(),
-        _ => todo!(),
+        _ => unreachable!("Architecture detection should have caught unsupported formats"),
     }
-    Ok(())
+    Ok(sleigh_lang_id.to_string())
 }

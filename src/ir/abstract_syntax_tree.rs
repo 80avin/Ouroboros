@@ -135,6 +135,24 @@ impl AbstractSyntaxTree {
             &mem.lang,
             hf.pts.root,
         ));
+
+        // Debug for fact function at 0x1189
+        if hf.start.0 == 0x1189 {
+            eprintln!("\n=== DEBUG: fact function at 0x1189 ===");
+            eprintln!("AST body statements:");
+            if let AstStatement::Block(stmts) = &body {
+                for (i, stmt) in stmts.iter().enumerate() {
+                    eprintln!("  [{}] {:?}", i, match stmt {
+                        AstStatement::If { condition, .. } => format!("If(condition: {})", condition),
+                        AstStatement::Assignment { destination, value, .. } => format!("Assignment({} = {})", destination, value),
+                        AstStatement::Return { result, .. } => format!("Return({})", result),
+                        _ => format!("{:?}", stmt),
+                    });
+                }
+            }
+            eprintln!("=== END DEBUG ===\n");
+        }
+
         let mut statements = Vec::new();
         // statements.push(AstStatement::Comment(format!("Scope:")));
         // statements.push(AstStatement::MultilineComment(scope.pretty_print(&hf.pts)));
@@ -191,16 +209,33 @@ fn build_block(
     let mut ast = Vec::new();
     let mut branch_block_slot = add_assignments(&mut ast, start, hf, lang, sese);
 
+    if hf.start.0 == 0x1189 {
+        eprintln!("DEBUG build_block: start={:?}, sese={:?}, branch_block_slot={:?}, after add_assignments: ast.len()={}",
+                 start, sese, branch_block_slot, ast.len());
+    }
+
     if branch_block_slot == sese.1 {
+        if hf.start.0 == 0x1189 {
+            eprintln!("DEBUG build_block: branch_block_slot == sese.1, returning early");
+        }
         return ast;
     }
 
     if let Some(pts_children) = hf.pts.get_children(sese) {
+        if hf.start.0 == 0x1189 {
+            eprintln!("DEBUG build_block: pts_children.len()={}", pts_children.len());
+        }
         // print
         if pts_children.len() == 0 && hf.pts.root == sese {
+            if hf.start.0 == 0x1189 {
+                eprintln!("DEBUG build_block: Calling add_program_segment (root, no children)");
+            }
             add_program_segment(scope, &mut ast, hf, lang, sese, false);
         } else {
             while let Some(c_pts) = pts_children.iter().find(|p| p.0 == branch_block_slot) {
+                if hf.start.0 == 0x1189 {
+                    eprintln!("DEBUG build_block: Found child PTS {:?}, calling add_program_segment", c_pts);
+                }
                 // child block fails out to the same address as parent block - no need to draw else branch.
                 add_program_segment(
                     scope,
@@ -354,7 +389,7 @@ fn add_program_segment(
                     if is_force_drop_else_branch {
                         None
                     } else {
-                        Some(false_branch_slot)
+                        Some(true_branch_slot)
                     },
                     false,
                     condition.clone(),
@@ -432,14 +467,18 @@ fn add_return(
 ) {
     match hf.calling_convention {
         CallingConvention::Cdecl => {
-            if let Some(eax) = block
-                .registers
-                .get(lang.sleigh.get_reg("EAX").unwrap().get_raw_var())
-            {
-                stmts.push(AstStatement::Return {
-                    sese,
-                    result: eax.into_owned(),
-                });
+            // Try RAX first (x86-64), fallback to EAX (x86-32)
+            let return_reg = lang.sleigh.get_reg("RAX")
+                .or_else(|| lang.sleigh.get_reg("EAX"))
+                .and_then(|r| r.get_var());
+
+            if let Some(reg_var) = return_reg {
+                if let Some(return_value) = block.registers.get(reg_var) {
+                    stmts.push(AstStatement::Return {
+                        sese,
+                        result: return_value.into_owned(),
+                    });
+                }
             }
         }
     }
@@ -454,13 +493,25 @@ fn add_assignments<'a>(
 ) -> BlockSlot {
     if block_slot != sese.1 {
         let block = &hf.composed_blocks[block_slot];
+
+        if hf.start.0 == 0x1189 {
+            eprintln!("DEBUG add_assignments: block={:?} ({}), memory_writes.len()={}, next={:?}",
+                     block_slot, block.identifier, block.memory_writes.len(), block.next);
+        }
+
         for addr in &block.memory_writes {
-            if addr
-                .iter()
-                .filter(|p| *p == &ExpressionOp::Variable(VariableSymbol::Varnode(lang.sp)))
-                .count()
-                == 0
-            {
+            // Only filter out direct writes to the stack pointer itself (e.g., SP = value),
+            // not writes to SP-relative addresses (e.g., *(SP+offset) = value which are local variables)
+            let is_direct_sp_write = matches!(
+                addr.root_op(),
+                Some(ExpressionOp::Variable(VariableSymbol::Varnode(sp))) if sp == &lang.sp
+            );
+
+            if hf.start.0 == 0x1189 {
+                eprintln!("DEBUG add_assignments:   addr={}, is_direct_sp_write={}", addr, is_direct_sp_write);
+            }
+
+            if !is_direct_sp_write {
                 let mut destination = addr.clone();
                 destination.dereference();
                 let state = block.memory.get(addr).unwrap();
@@ -471,6 +522,40 @@ fn add_assignments<'a>(
                 });
             }
         }
+
+        // If no memory writes but important registers were modified (e.g., return register),
+        // generate assignments for those to make optimized code visible in decompilation
+        if stmts.is_empty() && !matches!(block.next, NextBlock::Return { .. }) {
+            // Check if RAX/EAX (return register) was modified
+            let return_reg = lang.sleigh.get_reg("RAX")
+                .or_else(|| lang.sleigh.get_reg("EAX"))
+                .and_then(|r| r.get_var());
+
+            if let Some(reg_var) = return_reg {
+                if let Some(reg_value) = block.registers.get(reg_var) {
+                    // Only add assignment if the value is not just the register itself
+                    // (i.e., the register was actually modified, not just passed through)
+                    let is_identity = matches!(
+                        reg_value.root_op(),
+                        Some(ExpressionOp::Variable(VariableSymbol::Varnode(v))) if v == &reg_var
+                    );
+
+                    if !is_identity {
+                        if hf.start.0 == 0x1189 {
+                            eprintln!("DEBUG add_assignments:   Generating assignment for return register = {}", reg_value);
+                        }
+
+                        // Create a pseudo-local variable to represent the result
+                        stmts.push(AstStatement::Assignment {
+                            sese,
+                            destination: Expression::from(VariableSymbol::Varnode(reg_var)),
+                            value: reg_value.into_owned(),
+                        });
+                    }
+                }
+            }
+        }
+
         match &block.next {
             NextBlock::Call {
                 origin,
@@ -485,6 +570,9 @@ fn add_assignments<'a>(
                 }
             }
             NextBlock::Return { .. } => {
+                if hf.start.0 == 0x1189 {
+                    eprintln!("DEBUG add_assignments: Adding return from block {:?}", block_slot);
+                }
                 add_return(stmts, block, hf, lang, sese);
                 hf.cfg.single_end()
             }
@@ -512,22 +600,51 @@ fn add_call(
     sese: SingleEntrySingleExit<BlockSlot>,
 ) {
     let mut params = Vec::new();
-    if let Some(stack) = block.registers.get(lang.sp) {
-        let mut param_1 = stack.into_owned();
-        loop {
-            param_1.add_value(4, InstructionSize::U32);
 
-            if let Some(state) = block.get_memory_state_or_none(&param_1) {
-                if let Some(ExpressionOp::Variable(VariableSymbol::Varnode(_))) = state.root_op() {
-                    break;
+    // Check if this is x86-64 (64-bit) by checking if RDI register exists
+    let is_x64 = lang.sleigh.get_reg("RDI").is_some();
+
+    if is_x64 {
+        // x86-64 System V ABI: first 6 integer/pointer params in registers
+        let param_regs = ["RDI", "RSI", "RDX", "RCX", "R8", "R9"];
+
+        for reg_name in &param_regs {
+            if let Some(reg_var) = lang.sleigh.get_reg(reg_name).and_then(|r| r.get_var()) {
+                if let Some(state) = block.registers.get(reg_var) {
+                    // Skip if it's just the register's symbolic value (uninitialized)
+                    if let Some(ExpressionOp::Variable(VariableSymbol::Varnode(r))) = state.root_op() {
+                        if *r == reg_var {
+                            break; // Stop at first uninitialized parameter register
+                        }
+                    }
+                    params.push(state.into_owned());
                 } else {
-                    params.push(state.clone())
+                    break; // Stop if register state not found
                 }
-            } else {
-                break;
+            }
+        }
+
+        // TODO: Also check stack for additional parameters beyond first 6
+    } else {
+        // x86-32 (32-bit): parameters on stack
+        if let Some(stack) = block.registers.get(lang.sp) {
+            let mut param_addr = stack.into_owned();
+            loop {
+                param_addr.add_value(4, InstructionSize::U32);
+
+                if let Some(state) = block.get_memory_state_or_none(&param_addr) {
+                    if let Some(ExpressionOp::Variable(VariableSymbol::Varnode(_))) = state.root_op() {
+                        break;
+                    } else {
+                        params.push(state.clone())
+                    }
+                } else {
+                    break;
+                }
             }
         }
     }
+
     stmts.push(AstStatement::Call {
         destination: destination.clone(),
         params,

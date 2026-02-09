@@ -92,8 +92,10 @@ impl LiteralState {
             && ((instr.inst_next - base_addr) as usize) < bytes.len()
         {
             let i = std::mem::take(&mut instr);
-            if let Ok(block) = lifter.lift(&lang.sleigh, &i) {
-                if block.instructions.len() > 1 {
+            match lifter.lift(&lang.sleigh, &i) {
+                Ok(_block) => {
+                    // Accept instructions with any number of pcode ops (including just the marker)
+                    // Instructions with only a marker are valid but have no semantic meaning (like NOP, endbr64)
                     let start = (i.inst_next - base_addr) as usize;
                     decoder.set_inst(i.inst_next, &bytes[start..]);
                     instrs.push(i);
@@ -107,11 +109,11 @@ impl LiteralState {
                         // Assuming no valid instructions compose 16 zero bytes.
                         break;
                     }
-                } else {
+                }
+                Err(e) => {
+                    eprintln!("ERROR: {}", e);
                     break;
                 }
-            } else {
-                break;
             }
         }
 
@@ -149,6 +151,10 @@ impl Memory {
             ast: HashMap::new(),
             symbols: SymbolTable::new(),
         }
+    }
+
+    pub fn set_language(&mut self, lang: SleighLanguage) {
+        self.lang = lang;
     }
 
     // pub fn get_symbol_resolver(&self) -> Option<Box<dyn SymbolResolver>> {

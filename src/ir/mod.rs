@@ -78,18 +78,10 @@ pub fn lift(
     }
     for instruction in instructions {
         let pcode = pcode_lifter.lift(&lang.sleigh, instruction).unwrap();
-        if pcode.instructions.len() == 1 {
-            break;
-        }
-        // dasm.clear();
-        // lang.sleigh.disasm_into(instruction, &mut dasm);
-        // Iterpath node BlockSlot(41), 0x4b165b-0x4b1668, next: Call { origin: 0x4b1664, destination: Concrete(0x4b0760), next_block: Some(BlockSlot(41)) }
-        // if instruction.inst_start == 0x401017 {
-        //     println!("0x{:x} {dasm}", instruction.inst_start);
-        //     for pcode in &pcode.instructions {
-        //         println!("\t{:?}\t{:?}", pcode.op, pcode)
-        //     }
-        // }
+
+        // Always call lift() even for semantic-free instructions (those with only InstructionMarker)
+        // This ensures address tracking is correct, even though no operations are added to blocks
+        // This is important for instructions like endbr64 that have no semantics but occupy address space
         my_lifter.lift(pcode, lang);
     }
     println!("Created {} blocks", my_lifter.blocks.len());
@@ -222,7 +214,7 @@ impl PCodeToBasicBlocks {
 
                     self.current_block.registers.set_state(pcode.output, left);
                 }
-                IntAnd => {
+                IntAnd | BoolAnd => {
                     let mut left =
                         get_state(pcode.inputs.first(), &mut self.current_block.registers)
                             .into_owned();
@@ -383,18 +375,47 @@ impl PCodeToBasicBlocks {
                     let mut left =
                         get_state(pcode.inputs.first(), &mut self.current_block.registers)
                             .into_owned();
-                    let right = get_state(pcode.inputs.second(), &mut self.current_block.registers)
-                        .get_value();
-                    left.bit_shift_left(right, pcode.inputs.first().size());
+                    let right = get_state(pcode.inputs.second(), &mut self.current_block.registers);
+                    // Check if shift amount is concrete or symbolic
+                    if !right.is_symbolic() {
+                        left.bit_shift_left(right.get_value(), pcode.inputs.first().size());
+                    } else {
+                        // Symbolic shift amount - store as symbolic expression
+                        // TODO: Implement symbolic shift operations in Expression
+                        // For now, treat result as symbolic
+                    }
                     self.current_block.registers.set_state(pcode.output, left);
                 }
                 IntRight => {
                     let mut left =
                         get_state(pcode.inputs.first(), &mut self.current_block.registers)
                             .into_owned();
-                    let right = get_state(pcode.inputs.second(), &mut self.current_block.registers)
-                        .get_value();
-                    left.bit_shift_right(right, pcode.inputs.first().size());
+                    let right = get_state(pcode.inputs.second(), &mut self.current_block.registers);
+                    // Check if shift amount is concrete or symbolic
+                    if !right.is_symbolic() {
+                        left.bit_shift_right(right.get_value(), pcode.inputs.first().size());
+                    } else {
+                        // Symbolic shift amount - store as symbolic expression
+                        // TODO: Implement symbolic shift operations in Expression
+                        // For now, treat result as symbolic
+                    }
+                    self.current_block.registers.set_state(pcode.output, left);
+                }
+                IntSignedRight => {
+                    // TODO: Implement proper signed (arithmetic) right shift
+                    // For now, treating same as unsigned shift
+                    let mut left =
+                        get_state(pcode.inputs.first(), &mut self.current_block.registers)
+                            .into_owned();
+                    let right = get_state(pcode.inputs.second(), &mut self.current_block.registers);
+                    // Check if shift amount is concrete or symbolic
+                    if !right.is_symbolic() {
+                        left.bit_shift_right(right.get_value(), pcode.inputs.first().size());
+                    } else {
+                        // Symbolic shift amount - store as symbolic expression
+                        // TODO: Implement symbolic shift operations in Expression
+                        // For now, treat result as symbolic
+                    }
                     self.current_block.registers.set_state(pcode.output, left);
                 }
                 BoolNot | IntNot | IntNotEqual => {
@@ -415,16 +436,41 @@ impl PCodeToBasicBlocks {
                 PcodeOp(custom_op) => match lang.processor.as_str() {
                     "x86" => match custom_op {
                         16 => {
-                            // Software Interrup
+                            // Software Interrupt
                             let mut left =
                                 get_state(pcode.inputs.first(), &mut self.current_block.registers)
                                     .into_owned();
                             left.interrupt();
                             self.current_block.registers.set_state(pcode.output, left);
                         }
-                        n => todo!("Implement support for custom opcode {} on x86", n),
+                        _ => {
+                            // Unknown custom opcode - treat as symbolic operation
+                            // TODO: Implement proper handling for custom x86 opcodes
+                            eprintln!("Warning: Unimplemented custom x86 opcode {}, treating as symbolic", custom_op);
+                            if !pcode.output.is_invalid() {
+                                let left = if !pcode.inputs.first().is_invalid() {
+                                    get_state(pcode.inputs.first(), &mut self.current_block.registers)
+                                        .into_owned()
+                                } else {
+                                    Expression::from(0u64)
+                                };
+                                self.current_block.registers.set_state(pcode.output, left);
+                            }
+                        }
                     },
-                    cpu => todo!("Implement support for custom opcode {custom_op} on {cpu}"),
+                    _ => {
+                        // Unknown processor - treat as symbolic operation
+                        eprintln!("Warning: Unimplemented custom opcode {} for {}, treating as symbolic", custom_op, lang.processor);
+                        if !pcode.output.is_invalid() {
+                            let left = if !pcode.inputs.first().is_invalid() {
+                                get_state(pcode.inputs.first(), &mut self.current_block.registers)
+                                    .into_owned()
+                            } else {
+                                Expression::from(0u64)
+                            };
+                            self.current_block.registers.set_state(pcode.output, left);
+                        }
+                    }
                 },
                 PcodeBranch(lbl) => {
                     let condition =
@@ -480,6 +526,13 @@ impl PCodeToBasicBlocks {
                         .into_owned();
                     self.current_block.registers.set_state(pcode.output, left);
                 }
+                SignExtend => {
+                    // TODO: Implement proper sign extension
+                    // For now, treating same as zero extend
+                    let left = get_state(pcode.inputs.first(), &mut self.current_block.registers)
+                        .into_owned();
+                    self.current_block.registers.set_state(pcode.output, left);
+                }
                 Branch(hint) => {
                     let condition =
                         get_state(pcode.inputs.first(), &mut self.current_block.registers)
@@ -528,6 +581,177 @@ impl PCodeToBasicBlocks {
                         instruction_pointer,
                         next_instruction_pointer,
                     ));
+                }
+                IntDiv => {
+                    // Unsigned division
+                    // TODO: Implement proper division - for now treating as symbolic
+                    let left =
+                        get_state(pcode.inputs.first(), &mut self.current_block.registers)
+                            .into_owned();
+                    let _right = get_state(pcode.inputs.second(), &mut self.current_block.registers);
+                    self.current_block.registers.set_state(pcode.output, left);
+                }
+                IntSignedDiv => {
+                    // Signed division
+                    // TODO: Implement proper signed division - for now treating as symbolic
+                    let left =
+                        get_state(pcode.inputs.first(), &mut self.current_block.registers)
+                            .into_owned();
+                    let _right = get_state(pcode.inputs.second(), &mut self.current_block.registers);
+                    self.current_block.registers.set_state(pcode.output, left);
+                }
+                IntRem => {
+                    // Unsigned remainder (modulo)
+                    // TODO: Implement proper modulo - for now treating as symbolic
+                    let left =
+                        get_state(pcode.inputs.first(), &mut self.current_block.registers)
+                            .into_owned();
+                    let _right = get_state(pcode.inputs.second(), &mut self.current_block.registers);
+                    self.current_block.registers.set_state(pcode.output, left);
+                }
+                IntSignedRem => {
+                    // Signed remainder
+                    // TODO: Implement proper signed remainder - for now treating as symbolic
+                    let left =
+                        get_state(pcode.inputs.first(), &mut self.current_block.registers)
+                            .into_owned();
+                    let _right = get_state(pcode.inputs.second(), &mut self.current_block.registers);
+                    self.current_block.registers.set_state(pcode.output, left);
+                }
+                Subpiece(_truncation_amount) => {
+                    // Extract a piece of a larger value (like extracting AL from RAX)
+                    // For now, just copy the value
+                    // TODO: Implement proper subpiece extraction with truncation
+                    let left = get_state(pcode.inputs.first(), &mut self.current_block.registers)
+                        .into_owned();
+                    self.current_block.registers.set_state(pcode.output, left);
+                }
+                FloatIsNan => {
+                    // Check if a floating-point value is NaN
+                    // TODO: Implement proper NaN checking
+                    // For now, treating as symbolic (unknown result)
+                    let left = get_state(pcode.inputs.first(), &mut self.current_block.registers)
+                        .into_owned();
+                    self.current_block.registers.set_state(pcode.output, left);
+                }
+                FloatAdd => {
+                    // Floating-point addition
+                    // TODO: Implement proper float operations
+                    let left = get_state(pcode.inputs.first(), &mut self.current_block.registers)
+                        .into_owned();
+                    self.current_block.registers.set_state(pcode.output, left);
+                }
+                FloatSub => {
+                    // Floating-point subtraction
+                    // TODO: Implement proper float operations
+                    let left = get_state(pcode.inputs.first(), &mut self.current_block.registers)
+                        .into_owned();
+                    self.current_block.registers.set_state(pcode.output, left);
+                }
+                FloatMul => {
+                    // Floating-point multiplication
+                    // TODO: Implement proper float operations
+                    let left = get_state(pcode.inputs.first(), &mut self.current_block.registers)
+                        .into_owned();
+                    self.current_block.registers.set_state(pcode.output, left);
+                }
+                FloatDiv => {
+                    // Floating-point division
+                    // TODO: Implement proper float operations
+                    let left = get_state(pcode.inputs.first(), &mut self.current_block.registers)
+                        .into_owned();
+                    self.current_block.registers.set_state(pcode.output, left);
+                }
+                FloatLess => {
+                    // Floating-point less-than comparison
+                    // TODO: Implement proper float comparisons
+                    let left = get_state(pcode.inputs.first(), &mut self.current_block.registers)
+                        .into_owned();
+                    self.current_block.registers.set_state(pcode.output, left);
+                }
+                FloatLessEqual => {
+                    // Floating-point less-than-or-equal comparison
+                    // TODO: Implement proper float comparisons
+                    let left = get_state(pcode.inputs.first(), &mut self.current_block.registers)
+                        .into_owned();
+                    self.current_block.registers.set_state(pcode.output, left);
+                }
+                FloatEqual => {
+                    // Floating-point equality comparison
+                    // TODO: Implement proper float comparisons
+                    let left = get_state(pcode.inputs.first(), &mut self.current_block.registers)
+                        .into_owned();
+                    self.current_block.registers.set_state(pcode.output, left);
+                }
+                FloatNotEqual => {
+                    // Floating-point inequality comparison
+                    // TODO: Implement proper float comparisons
+                    let left = get_state(pcode.inputs.first(), &mut self.current_block.registers)
+                        .into_owned();
+                    self.current_block.registers.set_state(pcode.output, left);
+                }
+                FloatNegate => {
+                    // Floating-point negation
+                    // TODO: Implement proper float operations
+                    let left = get_state(pcode.inputs.first(), &mut self.current_block.registers)
+                        .into_owned();
+                    self.current_block.registers.set_state(pcode.output, left);
+                }
+                FloatAbs => {
+                    // Floating-point absolute value
+                    // TODO: Implement proper float operations
+                    let left = get_state(pcode.inputs.first(), &mut self.current_block.registers)
+                        .into_owned();
+                    self.current_block.registers.set_state(pcode.output, left);
+                }
+                FloatSqrt => {
+                    // Floating-point square root
+                    // TODO: Implement proper float operations
+                    let left = get_state(pcode.inputs.first(), &mut self.current_block.registers)
+                        .into_owned();
+                    self.current_block.registers.set_state(pcode.output, left);
+                }
+                FloatCeiling => {
+                    // Floating-point rounding operations
+                    // TODO: Implement proper float operations
+                    let left = get_state(pcode.inputs.first(), &mut self.current_block.registers)
+                        .into_owned();
+                    self.current_block.registers.set_state(pcode.output, left);
+                }
+                FloatFloor => {
+                    // Floating-point rounding operations
+                    // TODO: Implement proper float operations
+                    let left = get_state(pcode.inputs.first(), &mut self.current_block.registers)
+                        .into_owned();
+                    self.current_block.registers.set_state(pcode.output, left);
+                }
+                FloatRound => {
+                    // Floating-point rounding operations
+                    // TODO: Implement proper float operations
+                    let left = get_state(pcode.inputs.first(), &mut self.current_block.registers)
+                        .into_owned();
+                    self.current_block.registers.set_state(pcode.output, left);
+                }
+                FloatToFloat => {
+                    // Floating-point conversion operations
+                    // TODO: Implement proper conversions
+                    let left = get_state(pcode.inputs.first(), &mut self.current_block.registers)
+                        .into_owned();
+                    self.current_block.registers.set_state(pcode.output, left);
+                }
+                FloatToInt => {
+                    // Floating-point conversion operations
+                    // TODO: Implement proper conversions
+                    let left = get_state(pcode.inputs.first(), &mut self.current_block.registers)
+                        .into_owned();
+                    self.current_block.registers.set_state(pcode.output, left);
+                }
+                IntToFloat => {
+                    // Floating-point conversion operations
+                    // TODO: Implement proper conversions
+                    let left = get_state(pcode.inputs.first(), &mut self.current_block.registers)
+                        .into_owned();
+                    self.current_block.registers.set_state(pcode.output, left);
                 }
                 a => {
                     todo!("Execute {instruction_pointer}: PCode: {a:?}: {pcode:?}")

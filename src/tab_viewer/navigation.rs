@@ -16,9 +16,9 @@ impl NavigationView {
             let name = mem
                 .symbols
                 .resolve_exp(&Expression::from(addr))
-                .and_then(|s| Some(s.name.as_str()))
-                .unwrap();
-            if ui.label(name).clicked() {
+                .map(|s| s.name.clone())
+                .unwrap_or_else(|| format!("sub_{:x}", addr.0));
+            if ui.label(&name).clicked() {
                 signals.request_pos(addr);
             };
         }

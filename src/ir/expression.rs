@@ -187,6 +187,12 @@ pub enum InstructionSize {
     U32,
     /// 64-bit operation (qword)
     U64,
+    /// 128-bit operation (XMM registers)
+    U128,
+    /// 256-bit operation (YMM registers)
+    U256,
+    /// 512-bit operation (ZMM registers)
+    U512,
 }
 
 /// Indicates whether an operation should be interpreted as signed or unsigned.
@@ -209,7 +215,14 @@ impl Into<InstructionSize> for VarSize {
             2 => U16,
             4 => U32,
             8 => U64,
-            _ => panic!("Unexpected varnode size"),
+            10 => U128, // x87 FPU registers (80-bit, but treating as 128)
+            16 => U128, // XMM registers
+            32 => U256, // YMM registers
+            64 => U512, // ZMM registers
+            _ => {
+                eprintln!("Warning: Unexpected varnode size {}, treating as U64", self);
+                U64 // Default to U64 for unknown sizes
+            }
         }
     }
 }
@@ -781,7 +794,7 @@ impl Expression {
                             InstructionSize::U32 => {
                                 *v = (*v as u32).wrapping_add(value as u32) as u64
                             }
-                            InstructionSize::U64 => *v = (*v).wrapping_add(value),
+                            InstructionSize::U64 | InstructionSize::U128 | InstructionSize::U256 | InstructionSize::U512 => *v = (*v).wrapping_add(value),
                         }
                     } else if let Value(v) = &mut self[l] {
                         match size {
@@ -792,7 +805,7 @@ impl Expression {
                             InstructionSize::U32 => {
                                 *v = (*v as u32).wrapping_add(value as u32) as u64
                             }
-                            InstructionSize::U64 => *v = (*v).wrapping_add(value),
+                            InstructionSize::U64 | InstructionSize::U128 | InstructionSize::U256 | InstructionSize::U512 => *v = (*v).wrapping_add(value),
                         }
                     }
                     0
@@ -815,7 +828,7 @@ impl Expression {
                                 InstructionSize::U32 => {
                                     *v = (*v as u32).wrapping_sub(value as u32) as u64
                                 }
-                                InstructionSize::U64 => *v = (*v).wrapping_sub(value),
+                                InstructionSize::U64 | InstructionSize::U128 | InstructionSize::U256 | InstructionSize::U512 => *v = (*v).wrapping_sub(value),
                             }
                         } else {
                             match size {
@@ -828,7 +841,7 @@ impl Expression {
                                 InstructionSize::U32 => {
                                     *v = (value as u32).wrapping_sub(*v as u32) as u64
                                 }
-                                InstructionSize::U64 => *v = (value).wrapping_sub(*v),
+                                InstructionSize::U64 | InstructionSize::U128 | InstructionSize::U256 | InstructionSize::U512 => *v = (value).wrapping_sub(*v),
                             }
                             self[expr] = Add(l, r, size)
                         }
@@ -842,7 +855,7 @@ impl Expression {
                             InstructionSize::U32 => {
                                 *v = (*v as u32).wrapping_add(value as u32) as u64
                             }
-                            InstructionSize::U64 => *v = (*v).wrapping_add(value),
+                            InstructionSize::U64 | InstructionSize::U128 | InstructionSize::U256 | InstructionSize::U512 => *v = (*v).wrapping_add(value),
                         }
                     }
                     0
@@ -855,7 +868,7 @@ impl Expression {
                     InstructionSize::U8 => (v as u8).wrapping_add(value as u8) as u64,
                     InstructionSize::U16 => (v as u16).wrapping_add(value as u16) as u64,
                     InstructionSize::U32 => (v as u32).wrapping_add(value as u32) as u64,
-                    InstructionSize::U64 => (v).wrapping_add(value),
+                    InstructionSize::U64 | InstructionSize::U128 | InstructionSize::U256 | InstructionSize::U512 => (v).wrapping_add(value),
                 });
                 0
             }
@@ -924,7 +937,7 @@ impl Expression {
                                 InstructionSize::U32 => {
                                     *v = (*v as u32).wrapping_sub(value as u32) as u64
                                 }
-                                InstructionSize::U64 => *v = (*v).wrapping_sub(value),
+                                InstructionSize::U64 | InstructionSize::U128 | InstructionSize::U256 | InstructionSize::U512 => *v = (*v).wrapping_sub(value),
                             }
                         } else {
                             match size {
@@ -937,7 +950,7 @@ impl Expression {
                                 InstructionSize::U32 => {
                                     *v = (value as u32).wrapping_sub(*v as u32) as u64
                                 }
-                                InstructionSize::U64 => *v = (value).wrapping_sub(*v),
+                                InstructionSize::U64 | InstructionSize::U128 | InstructionSize::U256 | InstructionSize::U512 => *v = (value).wrapping_sub(*v),
                             }
                             self[expr] = Sub(l, r, size)
                         }
@@ -954,7 +967,7 @@ impl Expression {
                                 InstructionSize::U32 => {
                                     *v = (*v as u32).wrapping_sub(value as u32) as u64
                                 }
-                                InstructionSize::U64 => *v = (*v).wrapping_sub(value),
+                                InstructionSize::U64 | InstructionSize::U128 | InstructionSize::U256 | InstructionSize::U512 => *v = (*v).wrapping_sub(value),
                             }
                         } else {
                             match size {
@@ -967,7 +980,7 @@ impl Expression {
                                 InstructionSize::U32 => {
                                     *v = (value as u32).wrapping_sub(*v as u32) as u64
                                 }
-                                InstructionSize::U64 => *v = (value).wrapping_sub(*v),
+                                InstructionSize::U64 | InstructionSize::U128 | InstructionSize::U256 | InstructionSize::U512 => *v = (value).wrapping_sub(*v),
                             }
                             self[expr] = Sub(r, l, size) // turn this into `some - v`
                         }
@@ -989,7 +1002,7 @@ impl Expression {
                             InstructionSize::U32 => {
                                 *v = (*v as u32).wrapping_add(value as u32) as u64
                             }
-                            InstructionSize::U64 => *v = (*v).wrapping_add(value),
+                            InstructionSize::U64 | InstructionSize::U128 | InstructionSize::U256 | InstructionSize::U512 => *v = (*v).wrapping_add(value),
                         }
                     } else if let Value(v) = &mut self[l] {
                         // subtracting `value` from `v - some`
@@ -1002,7 +1015,7 @@ impl Expression {
                             InstructionSize::U32 => {
                                 *v = (*v as u32).wrapping_sub(value as u32) as u64
                             }
-                            InstructionSize::U64 => *v = (*v).wrapping_sub(value),
+                            InstructionSize::U64 | InstructionSize::U128 | InstructionSize::U256 | InstructionSize::U512 => *v = (*v).wrapping_sub(value),
                         }
                     }
                     0

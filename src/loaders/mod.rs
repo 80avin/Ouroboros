@@ -20,15 +20,15 @@ pub enum LoaderError {
 
 mod load_with_goblin;
 
-pub fn load<P>(path: P, memory: &mut Memory, signals: &mut TabSignals) -> Result<(), LoaderError>
+pub fn load<P>(path: P, memory: &mut Memory, signals: &mut TabSignals) -> Result<String, LoaderError>
 where
     P: AsRef<Path>,
 {
     let mut file = File::open(path)?;
     let mut buf = Vec::new();
     file.read_to_end(&mut buf)?;
-    load_with_goblin::load(&buf, memory, signals)?;
+    let sleigh_lang_id = load_with_goblin::load(&buf, memory, signals)?;
 
     signals.announce_new_file();
-    Ok(())
+    Ok(sleigh_lang_id)
 }
