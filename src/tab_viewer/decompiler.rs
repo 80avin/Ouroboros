@@ -78,9 +78,14 @@ impl Decompiler {
             (">>", theme.make_rich(TokenType::Punctuation, " >> ")),
             ("&", theme.make_rich(TokenType::Punctuation, " & ")),
             ("|", theme.make_rich(TokenType::Punctuation, " | ")),
+            ("^", theme.make_rich(TokenType::Punctuation, " ^ ")),
+            ("~", theme.make_rich(TokenType::Punctuation, "~")),
+            ("*", theme.make_rich(TokenType::Punctuation, " * ")),
             (",", theme.make_rich(TokenType::Punctuation, ", ")),
             (";", theme.make_rich(TokenType::Punctuation, ";")),
             (" ", theme.make_rich(TokenType::Whitespace, " ")),
+            ("overflow", theme.make_rich(TokenType::Keyword, "overflow")),
+            ("popcount", theme.make_rich(TokenType::Keyword, "popcount")),
         ]);
         Self {
             theme,
@@ -91,7 +96,7 @@ impl Decompiler {
         }
     }
     fn mk_color(&self, lbl: &'static str) -> RichText {
-        self.interned_tokens[lbl].clone()
+        if !self.interned_tokens.contains_key(lbl) { dbg!((&self.interned_tokens, lbl)); } self.interned_tokens[lbl].clone()
     }
 
     pub fn draw(
@@ -475,18 +480,16 @@ impl Decompiler {
                 let label = self.draw_symbol(ui, signals, v, false, mem, hf, ip_block);
                 label.on_hover_text("Deference::Variable");
             }
-            a => {
+            _ => {
                 let var = VariableSymbol::Ram(Box::new(e.get_sub_expression(pos)), 4);
                 if let Cow::Borrowed(sym) = resolve_symbol(mem, &var, hf, ip_block) {
                     let label = self.draw_symbol(ui, signals, &var, false, mem, hf, ip_block);
                     label.on_hover_text("Deference::ComplexExpression");
                 } else {
+                    // Can't resolve to a named variable, render as dereference expression
                     ui.label(self.mk_color("deref"));
                     ui.label(self.mk_color("("));
-                    ui.label(
-                        self.theme
-                            .make_rich(TokenType::Symbol, format!("Todo:Deref{a:?}")),
-                    );
+                    self.draw_expression(ui, signals, mem, hf, e, ip_block, pos, false);
                     ui.label(self.mk_color(")"));
                 }
             }
@@ -695,6 +698,39 @@ impl Decompiler {
                 ui.label(self.mk_color("<="));
                 self.draw_expression(ui, signals, mem, hf, e, ip_block, *r, is_call);
             }
+            ExpressionOp::Multiply(l, r, _) => {
+                self.draw_expression(ui, signals, mem, hf, e, ip_block, *l, is_call);
+                ui.label(self.mk_color("*"));
+                self.draw_expression(ui, signals, mem, hf, e, ip_block, *r, is_call);
+            }
+            ExpressionOp::Or(l, r) => {
+                self.draw_expression(ui, signals, mem, hf, e, ip_block, *l, is_call);
+                ui.label(self.mk_color("|"));
+                self.draw_expression(ui, signals, mem, hf, e, ip_block, *r, is_call);
+            }
+            ExpressionOp::Xor(l, r) => {
+                self.draw_expression(ui, signals, mem, hf, e, ip_block, *l, is_call);
+                ui.label(self.mk_color("^"));
+                self.draw_expression(ui, signals, mem, hf, e, ip_block, *r, is_call);
+            }
+            ExpressionOp::Not(operand) => {
+                ui.label(self.mk_color("~"));
+                self.draw_expression(ui, signals, mem, hf, e, ip_block, *operand, is_call);
+            }
+            ExpressionOp::Overflow(operand, _) => {
+                // Overflow checks are typically part of condition expressions
+                // For now, we'll render them as a function-like expression
+                ui.label(self.mk_color("overflow"));
+                ui.label(self.mk_color("("));
+                self.draw_expression(ui, signals, mem, hf, e, ip_block, *operand, is_call);
+                ui.label(self.mk_color(")"));
+            }
+            ExpressionOp::CountOnes(operand) => {
+                ui.label(self.mk_color("popcount"));
+                ui.label(self.mk_color("("));
+                self.draw_expression(ui, signals, mem, hf, e, ip_block, *operand, is_call);
+                ui.label(self.mk_color(")"));
+            }
             op => {
                 _ = ui.label(
                     self.theme
@@ -720,9 +756,24 @@ fn resolve_symbol<'a>(
     }) {
         Cow::Borrowed(def)
     } else {
+        // Try to generate a more readable name for unresolved symbols
+        let name = match dst {
+            VariableSymbol::Varnode(vn) => {
+                // Try to get the register name from SLEIGH
+                // VarNode contains id, offset, and size
+                // We can try to match it against known registers
+                format!("reg_{}_{}", vn.id, vn.offset)
+            }
+            VariableSymbol::Ram(expr, _) => {
+                // For RAM addresses, just show a generic name
+                format!("mem_{:x}", expr.root_op().map(|_| 0).unwrap_or(0))
+            }
+            _ => format!("unresolved_({dst})"),
+        };
+
         Cow::Owned(VariableDefinition {
             kind: VariableType::default(),
-            name: format!("unresolved_({dst})",),
+            name,
             variable: dst.clone(),
         })
     }

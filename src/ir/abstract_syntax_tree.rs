@@ -136,23 +136,6 @@ impl AbstractSyntaxTree {
             hf.pts.root,
         ));
 
-        // Debug for fact function at 0x1189
-        if hf.start.0 == 0x1189 {
-            eprintln!("\n=== DEBUG: fact function at 0x1189 ===");
-            eprintln!("AST body statements:");
-            if let AstStatement::Block(stmts) = &body {
-                for (i, stmt) in stmts.iter().enumerate() {
-                    eprintln!("  [{}] {:?}", i, match stmt {
-                        AstStatement::If { condition, .. } => format!("If(condition: {})", condition),
-                        AstStatement::Assignment { destination, value, .. } => format!("Assignment({} = {})", destination, value),
-                        AstStatement::Return { result, .. } => format!("Return({})", result),
-                        _ => format!("{:?}", stmt),
-                    });
-                }
-            }
-            eprintln!("=== END DEBUG ===\n");
-        }
-
         let mut statements = Vec::new();
         // statements.push(AstStatement::Comment(format!("Scope:")));
         // statements.push(AstStatement::MultilineComment(scope.pretty_print(&hf.pts)));
@@ -209,33 +192,16 @@ fn build_block(
     let mut ast = Vec::new();
     let mut branch_block_slot = add_assignments(&mut ast, start, hf, lang, sese);
 
-    if hf.start.0 == 0x1189 {
-        eprintln!("DEBUG build_block: start={:?}, sese={:?}, branch_block_slot={:?}, after add_assignments: ast.len()={}",
-                 start, sese, branch_block_slot, ast.len());
-    }
-
     if branch_block_slot == sese.1 {
-        if hf.start.0 == 0x1189 {
-            eprintln!("DEBUG build_block: branch_block_slot == sese.1, returning early");
-        }
         return ast;
     }
 
     if let Some(pts_children) = hf.pts.get_children(sese) {
-        if hf.start.0 == 0x1189 {
-            eprintln!("DEBUG build_block: pts_children.len()={}", pts_children.len());
-        }
         // print
         if pts_children.len() == 0 && hf.pts.root == sese {
-            if hf.start.0 == 0x1189 {
-                eprintln!("DEBUG build_block: Calling add_program_segment (root, no children)");
-            }
             add_program_segment(scope, &mut ast, hf, lang, sese, false);
         } else {
             while let Some(c_pts) = pts_children.iter().find(|p| p.0 == branch_block_slot) {
-                if hf.start.0 == 0x1189 {
-                    eprintln!("DEBUG build_block: Found child PTS {:?}, calling add_program_segment", c_pts);
-                }
                 // child block fails out to the same address as parent block - no need to draw else branch.
                 add_program_segment(
                     scope,
@@ -494,11 +460,6 @@ fn add_assignments<'a>(
     if block_slot != sese.1 {
         let block = &hf.composed_blocks[block_slot];
 
-        if hf.start.0 == 0x1189 {
-            eprintln!("DEBUG add_assignments: block={:?} ({}), memory_writes.len()={}, next={:?}",
-                     block_slot, block.identifier, block.memory_writes.len(), block.next);
-        }
-
         for addr in &block.memory_writes {
             // Only filter out direct writes to the stack pointer itself (e.g., SP = value),
             // not writes to SP-relative addresses (e.g., *(SP+offset) = value which are local variables)
@@ -506,10 +467,6 @@ fn add_assignments<'a>(
                 addr.root_op(),
                 Some(ExpressionOp::Variable(VariableSymbol::Varnode(sp))) if sp == &lang.sp
             );
-
-            if hf.start.0 == 0x1189 {
-                eprintln!("DEBUG add_assignments:   addr={}, is_direct_sp_write={}", addr, is_direct_sp_write);
-            }
 
             if !is_direct_sp_write {
                 let mut destination = addr.clone();
@@ -541,10 +498,6 @@ fn add_assignments<'a>(
                     );
 
                     if !is_identity {
-                        if hf.start.0 == 0x1189 {
-                            eprintln!("DEBUG add_assignments:   Generating assignment for return register = {}", reg_value);
-                        }
-
                         // Create a pseudo-local variable to represent the result
                         stmts.push(AstStatement::Assignment {
                             sese,
@@ -570,9 +523,6 @@ fn add_assignments<'a>(
                 }
             }
             NextBlock::Return { .. } => {
-                if hf.start.0 == 0x1189 {
-                    eprintln!("DEBUG add_assignments: Adding return from block {:?}", block_slot);
-                }
                 add_return(stmts, block, hf, lang, sese);
                 hf.cfg.single_end()
             }
