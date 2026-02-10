@@ -62,8 +62,8 @@ impl<'a> IntoIterator for &'a TabSignals {
 }
 
 pub struct TabSignals {
-    new_signals: Vec<SignalKind>,
-    signals: Vec<SignalKind>,
+    pub new_signals: Vec<SignalKind>,
+    pub signals: Vec<SignalKind>,
 }
 
 impl TabSignals {

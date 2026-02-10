@@ -473,6 +473,7 @@ dependencies = [
  "enumset",
  "goblin",
  "nodit",
+ "once_cell",
  "pcode",
  "petgraph",
  "rayon",

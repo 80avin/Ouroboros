@@ -1,6 +1,5 @@
 use crate::{
-    ir::{basic_block::BlockSlot, expression::OpIdx},
-    VariableSymbol,
+    ir::{basic_block::BlockSlot, expression::{OpIdx, VariableSymbol}},
 };
 use std::{borrow::Cow, collections::HashMap};
 
