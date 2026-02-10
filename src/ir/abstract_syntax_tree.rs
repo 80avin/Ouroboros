@@ -390,7 +390,7 @@ fn add_program_segment(
                     ast_block.push(AstStatement::If {
                         sese,
                         condition: condition,
-                        true_statement: Box::new(AstStatement::Block(block)),
+                        true_statement: Box::new(AstStatement::Block(block)), // TODO: Inspect if true_* and else_* parts should be interchanged. Likely yes, because the true statement is given by address and not by adjacency
                         true_branch: first_branch,
                         else_statement: Box::new(AstStatement::Block(false_block)),
                         else_branch,
@@ -434,7 +434,9 @@ fn add_return(
     match hf.calling_convention {
         CallingConvention::Cdecl => {
             // Try RAX first (x86-64), fallback to EAX (x86-32)
-            let return_reg = lang.sleigh.get_reg("RAX")
+            let return_reg = lang
+                .sleigh
+                .get_reg("RAX")
                 .or_else(|| lang.sleigh.get_reg("EAX"))
                 .and_then(|r| r.get_var());
 
@@ -484,7 +486,9 @@ fn add_assignments<'a>(
         // generate assignments for those to make optimized code visible in decompilation
         if stmts.is_empty() && !matches!(block.next, NextBlock::Return { .. }) {
             // Check if RAX/EAX (return register) was modified
-            let return_reg = lang.sleigh.get_reg("RAX")
+            let return_reg = lang
+                .sleigh
+                .get_reg("RAX")
                 .or_else(|| lang.sleigh.get_reg("EAX"))
                 .and_then(|r| r.get_var());
 
@@ -562,7 +566,9 @@ fn add_call(
             if let Some(reg_var) = lang.sleigh.get_reg(reg_name).and_then(|r| r.get_var()) {
                 if let Some(state) = block.registers.get(reg_var) {
                     // Skip if it's just the register's symbolic value (uninitialized)
-                    if let Some(ExpressionOp::Variable(VariableSymbol::Varnode(r))) = state.root_op() {
+                    if let Some(ExpressionOp::Variable(VariableSymbol::Varnode(r))) =
+                        state.root_op()
+                    {
                         if *r == reg_var {
                             break; // Stop at first uninitialized parameter register
                         }
@@ -583,7 +589,9 @@ fn add_call(
                 param_addr.add_value(4, InstructionSize::U32);
 
                 if let Some(state) = block.get_memory_state_or_none(&param_addr) {
-                    if let Some(ExpressionOp::Variable(VariableSymbol::Varnode(_))) = state.root_op() {
+                    if let Some(ExpressionOp::Variable(VariableSymbol::Varnode(_))) =
+                        state.root_op()
+                    {
                         break;
                     } else {
                         params.push(state.clone())

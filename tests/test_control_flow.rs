@@ -1,6 +1,7 @@
 mod common;
 use common::*;
 use bin_ast::ir::abstract_syntax_tree::AstStatement;
+use assert_matches::assert_matches;
 
 #[test]
 fn test_simple_if_has_branches() {
@@ -8,11 +9,9 @@ fn test_simple_if_has_branches() {
 
     // Note: The decompiler may optimize the if/else into different structures
     // We just verify the AST was created successfully and has basic structure
-    assert!(
-        matches!(
-            ast.entry(),
-            AstStatement::Block(_)
-        ),
+    assert_matches!(
+        ast.entry(),
+        AstStatement::Block(_),
         "Expected AST to have a Block statement"
     );
 
@@ -31,11 +30,9 @@ fn test_nested_if_structure() {
 
     // Verify AST was created successfully
     // The exact structure depends on the decompiler's optimization
-    assert!(
-        matches!(
-            ast.entry(),
-            AstStatement::Block(_)
-        ),
+    assert_matches!(
+        ast.entry(),
+        AstStatement::Block(_),
         "Expected AST to have a Block statement"
     );
 }

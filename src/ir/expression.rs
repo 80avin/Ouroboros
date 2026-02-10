@@ -1181,6 +1181,13 @@ impl Expression {
     /// * `other` - The expression to AND with this one
     pub fn and(&mut self, other: &Expression) {
         if self != other {
+            // Try to simplify complex flag-based comparisons
+            // Pattern: (x != y) & (overflow(x - y) == (x >= y)) → x > y
+            if let Some(simplified) = Self::try_simplify_signed_comparison(self, other) {
+                *self = simplified;
+                return;
+            }
+
             let left = self.get_entry_point();
             if let Some(ExpressionOp::Value(v)) = other.root_op() {
                 if let ExpressionOp::Value(me) = &self[left] {
@@ -1195,6 +1202,69 @@ impl Expression {
             let right = self.get_entry_point();
             self.0.push(ExpressionOp::And(left, right));
         }
+    }
+
+    /// Try to simplify complex flag-based signed comparisons.
+    ///
+    /// Recognizes patterns like `(x != y) & (overflow(x - y) == (x >= y))` and
+    /// simplifies them to `x > y`. This pattern arises from x86 signed comparison
+    /// instructions where the condition is derived from CPU flags.
+    ///
+    /// # Arguments
+    /// * `lhs` - Left side of the AND operation
+    /// * `rhs` - Right side of the AND operation
+    ///
+    /// # Returns
+    /// `Some(simplified_expr)` if the pattern matches, `None` otherwise
+    fn try_simplify_signed_comparison(lhs: &Expression, rhs: &Expression) -> Option<Expression> {
+        // Pattern: (x != y) & (overflow(x - y) == (x >= y)) → x > y
+
+        // Check if lhs is NotEquals(a, b)
+        if let Some(ExpressionOp::NotEquals(left_a, left_b, signedness)) = lhs.root_op() {
+            // Get the actual operands from lhs
+            let var_a = lhs.get_sub_expression(*left_a);
+            let var_b = lhs.get_sub_expression(*left_b);
+
+            // Check if rhs is Equals(..., ...)
+            if let Some(ExpressionOp::Equals(right_left, right_right, _)) = rhs.root_op() {
+                let equals_lhs = rhs.get_sub_expression(*right_left);
+                let equals_rhs = rhs.get_sub_expression(*right_right);
+
+                // Check if one side is Overflow(Sub(a, b)) and other is GreaterOrEquals(a, b)
+                let overflow_match = matches!(equals_lhs.root_op(), Some(ExpressionOp::Overflow(_, _)));
+                let cmp_match = matches!(equals_rhs.root_op(), Some(ExpressionOp::GreaterOrEquals(_, _, _)));
+
+                if overflow_match && cmp_match {
+                    // Extract the Overflow operand
+                    if let Some(ExpressionOp::Overflow(overflow_idx, _)) = equals_lhs.root_op() {
+                        let overflow_expr = equals_lhs.get_sub_expression(*overflow_idx);
+
+                        // Check if it's Sub(a, b)
+                        if let Some(ExpressionOp::Sub(sub_a, sub_b, size)) = overflow_expr.root_op() {
+                            let sub_lhs = overflow_expr.get_sub_expression(*sub_a);
+                            let sub_rhs = overflow_expr.get_sub_expression(*sub_b);
+
+                            // Check if GreaterOrEquals is also (a, b)
+                            if let Some(ExpressionOp::GreaterOrEquals(ge_a, ge_b, _)) = equals_rhs.root_op() {
+                                let ge_lhs = equals_rhs.get_sub_expression(*ge_a);
+                                let ge_rhs = equals_rhs.get_sub_expression(*ge_b);
+
+                                // Verify all operands match: var_a == sub_lhs == ge_lhs and var_b == sub_rhs == ge_rhs
+                                if var_a == sub_lhs && var_a == ge_lhs &&
+                                   var_b == sub_rhs && var_b == ge_rhs {
+                                    // Create simplified expression: a > b
+                                    let mut result = var_a;
+                                    result.greater_than(&var_b, *signedness);
+                                    return Some(result);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        None
     }
 
     /// Perform bitwise OR with another expression.
@@ -1397,6 +1467,18 @@ impl Expression {
             let r = self.get_entry_point();
             self.0.push(ExpressionOp::Less(l, r, sgn));
         }
+    }
+
+    /// Create a greater-than comparison with another expression: `this > other`.
+    ///
+    /// # Arguments
+    /// * `other` - Expression to compare with
+    /// * `sgn` - Whether to treat operands as signed or unsigned
+    pub fn greater_than(&mut self, other: &Expression, sgn: SignedOrUnsiged) {
+        let l = self.get_entry_point();
+        self.copy_other_to_end(&other.0);
+        let r = self.get_entry_point();
+        self.0.push(ExpressionOp::Greater(l, r, sgn));
     }
 
     /// Create a less-than comparison with a constant: `this < value`.
